@@ -1,9 +1,9 @@
 {
   "id": "arcade",
   "name": "Arcade",
-  "description": "Phase 1 foundation stub for ClashPoint's emulator frontend. Proves the trusted plugin bridge (process launch, registry, filesystem) works end to end. Real emulator support (RetroArch and beyond) ships in a later update.",
+  "description": "Emulator frontend for ClashPoint Nexus. Point it at your ROM folders and launch through RetroArch, all from the couch. NES, SNES, Genesis, N64 and GBA to start, more systems coming. Requires RetroArch to already be installed.",
   "author": "Eoinknd16",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "category": "game",
   "entry": "bundle.js",
   "icon": "icon.svg",
