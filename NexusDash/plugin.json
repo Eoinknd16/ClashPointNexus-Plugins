@@ -5,6 +5,7 @@
   "author": "Eoinknd16",
   "version": "1.0.0",
   "category": "game",
+  "placement": "apps",
   "entry": "bundle.js",
   "icon": "icon.svg",
   "permissions": [],
