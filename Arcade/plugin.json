@@ -1,0 +1,13 @@
+{
+  "id": "arcade",
+  "name": "Arcade",
+  "description": "Phase 1 foundation stub for ClashPoint's emulator frontend. Proves the trusted plugin bridge (process launch, registry, filesystem) works end to end. Real emulator support (RetroArch and beyond) ships in a later update.",
+  "author": "Eoinknd16",
+  "version": "0.1.0",
+  "category": "game",
+  "entry": "bundle.js",
+  "icon": "icon.svg",
+  "placement": "own-screen",
+  "permissions": [],
+  "price": { "kind": "free" }
+}
