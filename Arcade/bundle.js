@@ -102,14 +102,15 @@
         // builds notepad.exe is an app-execution-alias stub for the
         // Store-packaged Notepad, and spawning that stub directly can
         // return a process handle that never actually emits 'exit' even
-        // after the real window closes -- Nexus would then never know to
-        // restore itself. `cmd /c start /wait` uses Windows' own, more
-        // robust wait-for-this-app-to-finish logic (the same thing `start
-        // /wait` has always been used for launching aliased/UWP apps
-        // reliably) and only exits once notepad actually does, so the cmd
-        // process we're actually tracking has honest exit semantics
-        // regardless of what notepad.exe itself resolves to on this
-        // machine.
+        // after the real window closes. `cmd /c start /wait` uses Windows'
+        // own wait-for-this-app-to-finish logic instead, and is the most
+        // reliable option found so far -- a console-based `pause` prompt
+        // and a PowerShell message box were both tried as alternatives and
+        // both failed *immediately*, unrelated to notepad's own quirks:
+        // under this exact spawnProcess's detached+stdio:ignore options,
+        // a nulled stdin makes `pause` return instantly, and a detached
+        // process without a proper window station makes a message box
+        // vanish in well under a second. Neither is usable here.
         var result = await api.spawnProcess('cmd.exe', ['/c', 'start', '/wait', 'notepad.exe'])
         logLine(result.error ? 'FAILED — ' + result.error : 'OK — launched, Nexus should minimize now')
       } catch (e) {
