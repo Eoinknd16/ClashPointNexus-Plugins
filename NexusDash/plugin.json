@@ -1,0 +1,12 @@
+{
+  "id": "nexus-dash",
+  "name": "Nexus Dash",
+  "description": "A controller-first 3-lane dodge game. Left/Right or D-Pad to swap lanes, avoid the rocks, grab the coins, and see how fast you can go before you crash. The same game that used to ship inside Nexus itself, now a standalone plugin.",
+  "author": "Eoinknd16",
+  "version": "1.0.0",
+  "category": "game",
+  "entry": "bundle.js",
+  "icon": "icon.svg",
+  "permissions": [],
+  "price": { "kind": "free" }
+}
