@@ -19,7 +19,8 @@
   // recommend for the portable build, plus the default Steam library
   // location for the Steam release (App ID 1118310) — checked directly
   // rather than guessed from an env var this sandbox has no primitive to
-  // read. If neither is right, Locate RetroArch Folder below covers it.
+  // read. If neither is right, the RetroArch row's own "change" action
+  // covers it.
   var RETROARCH_CANDIDATE_DIRS = ['C:\\RetroArch-Win64', 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\RetroArch']
 
   var STORAGE_KEY = 'arcade.config.v1'
@@ -43,58 +44,68 @@
     }
   }
 
+  // Every listDir call goes through this — never swallow the real reason
+  // a folder read failed. A generic "doesn't exist" guess is actively
+  // misleading when the real cause is something else (permissions, a
+  // trailing-slash mismatch, anything) — whatever Node actually says is
+  // always more honest than a guess, and it's the only thing that makes a
+  // bug report about this useful at all.
+  async function safeListDir(path) {
+    try {
+      var entries = await api.listDir(path)
+      return { entries: entries, error: null }
+    } catch (e) {
+      return { entries: null, error: e && e.message ? e.message : String(e) }
+    }
+  }
+
   // ---------------------------------------------------------------------
   // RetroArch adapter — one plain object, not a class. A second,
   // structurally different emulator later is a second object implementing
-  // the same five methods its own way (detect/findCore/listRoms/
-  // buildLaunchArgs/launch), not a subclass of this one.
+  // the same methods its own way, not a subclass of this one.
   // ---------------------------------------------------------------------
   var RetroArchAdapter = {
-    // -> dir path or null. Never installs anything, only ever looks.
+    // -> { dir, error }. dir is null if not found; error carries the real
+    // reason from the last attempt, for display, not just a guess.
     detect: async function (config) {
       if (config.retroArchDir) {
         var cached = await this._hasExe(config.retroArchDir)
-        if (cached) return config.retroArchDir
+        if (cached.found) return { dir: config.retroArchDir, error: null }
       }
+      var lastError = null
       for (var i = 0; i < RETROARCH_CANDIDATE_DIRS.length; i++) {
         var dir = RETROARCH_CANDIDATE_DIRS[i]
-        if (await this._hasExe(dir)) return dir
+        var result = await this._hasExe(dir)
+        if (result.found) return { dir: dir, error: null }
+        if (result.error) lastError = result.error
       }
-      return null
+      return { dir: null, error: lastError }
     },
 
+    // -> { found, error }.
     _hasExe: async function (dir) {
-      try {
-        var entries = await api.listDir(dir)
-        return entries.indexOf('retroarch.exe') !== -1
-      } catch (e) {
-        return false
-      }
+      var result = await safeListDir(dir)
+      if (result.entries === null) return { found: false, error: result.error }
+      return { found: result.entries.indexOf('retroarch.exe') !== -1, error: null }
     },
 
-    // -> core file path or null. Standard portable-layout convention:
-    // cores live in a `cores` folder alongside retroarch.exe itself.
+    // -> { path, error }. Standard portable-layout convention: cores live
+    // in a `cores` folder alongside retroarch.exe itself.
     findCore: async function (retroArchDir, coreFilename) {
-      var coresDir = retroArchDir + '\\cores'
-      try {
-        var entries = await api.listDir(coresDir)
-        return entries.indexOf(coreFilename) !== -1 ? coresDir + '\\' + coreFilename : null
-      } catch (e) {
-        return null
-      }
+      var result = await safeListDir(retroArchDir + '\\cores')
+      if (result.entries === null) return { path: null, error: result.error }
+      var found = result.entries.indexOf(coreFilename) !== -1
+      return { path: found ? retroArchDir + '\\cores\\' + coreFilename : null, error: null }
     },
 
-    // -> array of { name, path }, filtered by this system's extensions.
+    // -> { roms, error }. roms is an array of { name, path }, filtered by
+    // this system's extensions.
     listRoms: async function (folderPath, extensions) {
-      var entries
-      try {
-        entries = await api.listDir(folderPath)
-      } catch (e) {
-        return null
-      }
+      var result = await safeListDir(folderPath)
+      if (result.entries === null) return { roms: null, error: result.error }
       var roms = []
-      for (var i = 0; i < entries.length; i++) {
-        var name = entries[i]
+      for (var i = 0; i < result.entries.length; i++) {
+        var name = result.entries[i]
         var dot = name.lastIndexOf('.')
         if (dot === -1) continue
         var ext = name.slice(dot).toLowerCase()
@@ -104,7 +115,7 @@
       roms.sort(function (a, b) {
         return a.name.localeCompare(b.name)
       })
-      return roms
+      return { roms: roms, error: null }
     },
 
     buildLaunchArgs: function (corePath, romPath) {
@@ -138,20 +149,23 @@
     bg: '#0b0b0f',
     panel: '#151519',
     accent: '#4338ca',
-    muted: '#8f8fa3',
-    danger: '#f87171'
+    muted: '#8f8fa3'
   }
 
   function mount(root, api) {
     // ---- state ----
     var config = loadConfig()
     var zone = 'systems' // 'systems' | 'games'
-    var systemIndex = 0
-    var gameIndex = 0
+    var topIndex = 0 // index into getTopRows() — the 5 systems + the RetroArch row
+    var gameIndex = 0 // index into getGameRows() — the "Change Folder" row + games
     var games = [] // currently-shown ROM list for the selected system
     var statusMessage = ''
     var retroArchDir = null
     var detecting = true
+    // Which top-row (system) the current game list belongs to — separate
+    // from topIndex so leaving/re-entering the systems list doesn't lose
+    // which system's games are on screen.
+    var currentSystemTopIndex = 0
 
     root.style.cssText =
       'background:' +
@@ -159,39 +173,69 @@
       ';color:#fff;font-family:sans-serif;height:100%;display:flex;flex-direction:column;' +
       'padding:32px;box-sizing:border-box;gap:16px;overflow:hidden'
 
-    async function ensureRetroArch() {
+    function getTopRows() {
+      var rows = SYSTEMS.map(function (s) {
+        return { kind: 'system', system: s }
+      })
+      rows.push({ kind: 'retroarch' })
+      return rows
+    }
+
+    function getGameRows() {
+      var rows = [{ kind: 'changeFolder' }]
+      games.forEach(function (g) {
+        rows.push({ kind: 'game', game: g })
+      })
+      return rows
+    }
+
+    async function detectRetroArch() {
       detecting = true
       render()
-      retroArchDir = await RetroArchAdapter.detect(config)
+      var result = await RetroArchAdapter.detect(config)
+      retroArchDir = result.dir
       if (retroArchDir && retroArchDir !== config.retroArchDir) {
         config.retroArchDir = retroArchDir
         saveConfig(config)
       }
+      statusMessage = retroArchDir
+        ? ''
+        : result.error
+          ? "Couldn't find RetroArch automatically (" + result.error + ')'
+          : "Couldn't find RetroArch automatically"
       detecting = false
       render()
     }
 
-    async function locateRetroArchFolder() {
+    // Always reachable, whether RetroArch is already found or not — a
+    // wrong or stale detection needs a way back, not just a first-run
+    // fallback.
+    async function changeRetroArchFolder() {
       var folder = await api.pickFolder()
       if (!folder) return
-      var hasExe = await RetroArchAdapter._hasExe(folder)
-      if (!hasExe) {
-        statusMessage = "That folder doesn't have retroarch.exe in it"
+      var result = await RetroArchAdapter._hasExe(folder)
+      if (!result.found) {
+        statusMessage = result.error
+          ? "That folder doesn't have retroarch.exe in it (" + result.error + ')'
+          : "That folder doesn't have retroarch.exe in it"
         render()
         return
       }
       retroArchDir = folder
       config.retroArchDir = folder
       saveConfig(config)
-      statusMessage = 'Found RetroArch'
+      statusMessage = 'Found RetroArch at ' + folder
       render()
     }
 
+    // Also always reachable — assigning once and being stuck with it
+    // (wrong folder, moved folder) was the other real problem here.
     async function assignFolder(system) {
       var folder = await api.pickFolder()
       if (!folder) return
       config.folders[system.id] = folder
       saveConfig(config)
+      statusMessage = 'Folder set for ' + system.name
       render()
     }
 
@@ -203,13 +247,13 @@
       }
       statusMessage = 'Scanning ' + system.name + ' folder...'
       render()
-      var roms = await RetroArchAdapter.listRoms(folder, system.extensions)
-      if (roms === null) {
-        statusMessage = "Couldn't read " + folder + ' anymore — the folder may have moved'
+      var result = await RetroArchAdapter.listRoms(folder, system.extensions)
+      if (result.roms === null) {
+        statusMessage = "Couldn't read " + folder + (result.error ? ' (' + result.error + ')' : '')
         render()
         return
       }
-      games = roms
+      games = result.roms
       gameIndex = 0
       zone = 'games'
       statusMessage = ''
@@ -222,16 +266,17 @@
         render()
         return
       }
-      var corePath = await RetroArchAdapter.findCore(retroArchDir, system.core)
-      if (!corePath) {
-        statusMessage =
-          system.name + " needs the " + system.core + " core, not installed. Get it from RetroArch's own Core Downloader."
+      var core = await RetroArchAdapter.findCore(retroArchDir, system.core)
+      if (!core.path) {
+        statusMessage = core.error
+          ? "Couldn't check for the " + system.core + ' core (' + core.error + ')'
+          : system.name + " needs the " + system.core + " core, not installed. Get it from RetroArch's own Core Downloader."
         render()
         return
       }
       statusMessage = 'Launching ' + game.name + '...'
       render()
-      var result = await RetroArchAdapter.launch(retroArchDir, corePath, game.path)
+      var result = await RetroArchAdapter.launch(retroArchDir, core.path, game.path)
       if (result && result.error) {
         statusMessage = 'Launch failed: ' + result.error
         render()
@@ -249,48 +294,8 @@
       ])
       root.appendChild(header)
 
-      if (!detecting && !retroArchDir) {
-        root.appendChild(
-          h(
-            'div',
-            {
-              style: {
-                background: COLORS.panel,
-                borderRadius: '10px',
-                padding: '14px 18px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '16px'
-              }
-            },
-            [
-              h('span', { style: { fontSize: '13px', color: COLORS.muted } }, [
-                "Couldn't find RetroArch automatically. It needs to already be installed — Arcade never installs it for you."
-              ]),
-              h(
-                'button',
-                {
-                  style: {
-                    background: COLORS.accent,
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: '8px',
-                    padding: '8px 16px',
-                    cursor: 'pointer',
-                    whiteSpace: 'nowrap'
-                  },
-                  onclick: locateRetroArchFolder
-                },
-                ['Locate RetroArch Folder']
-              )
-            ]
-          )
-        )
-      }
-
       if (zone === 'systems') root.appendChild(renderSystems())
-      else root.appendChild(renderGames())
+      else root.appendChild(renderGamesForCurrentSystem())
 
       if (statusMessage) {
         root.appendChild(h('p', { style: { color: COLORS.muted, fontSize: '13px', margin: '0' } }, [statusMessage]))
@@ -298,16 +303,49 @@
     }
 
     function renderSystems() {
+      var rows = getTopRows()
       var list = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto' } })
-      SYSTEMS.forEach(function (system, i) {
+      rows.forEach(function (row, i) {
+        var focused = i === topIndex
+        if (row.kind === 'retroarch') {
+          list.appendChild(
+            h(
+              'div',
+              {
+                onclick: function () {
+                  topIndex = i
+                  changeRetroArchFolder()
+                },
+                style: {
+                  background: focused ? COLORS.accent : COLORS.panel,
+                  borderRadius: '10px',
+                  padding: '14px 18px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginTop: '8px'
+                }
+              },
+              [
+                h('span', { style: { fontWeight: '600' } }, ['RetroArch']),
+                h('span', { style: { fontSize: '12px', color: focused ? '#e0e0ff' : COLORS.muted } }, [
+                  retroArchDir ? retroArchDir + ' — press Confirm to change' : 'Not found — press Confirm to locate it'
+                ])
+              ]
+            )
+          )
+          return
+        }
+        var system = row.system
         var folder = config.folders[system.id]
-        var focused = zone === 'systems' && i === systemIndex
         list.appendChild(
           h(
             'div',
             {
               onclick: function () {
-                systemIndex = i
+                topIndex = i
+                currentSystemTopIndex = i
                 openSystem(system)
               },
               style: {
@@ -332,8 +370,13 @@
       return list
     }
 
-    function renderGames() {
-      var system = SYSTEMS[systemIndex]
+    function currentSystem() {
+      return SYSTEMS[currentSystemTopIndex]
+    }
+
+    function renderGamesForCurrentSystem() {
+      var system = currentSystem()
+      var rows = getGameRows()
       var wrap = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px', overflow: 'hidden', flex: '1' } })
       wrap.appendChild(
         h('h2', { style: { fontSize: '16px', margin: '0 0 4px 0', color: COLORS.muted } }, [
@@ -341,11 +384,33 @@
         ])
       )
       var list = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', overflowY: 'auto' } })
-      if (games.length === 0) {
-        list.appendChild(h('p', { style: { color: COLORS.muted, fontSize: '13px' } }, ['No matching ROM files in that folder.']))
-      }
-      games.forEach(function (game, i) {
+      rows.forEach(function (row, i) {
         var focused = i === gameIndex
+        if (row.kind === 'changeFolder') {
+          list.appendChild(
+            h(
+              'div',
+              {
+                onclick: function () {
+                  gameIndex = i
+                  assignFolder(system)
+                },
+                style: {
+                  background: focused ? COLORS.accent : 'transparent',
+                  border: '1px dashed ' + (focused ? COLORS.accent : COLORS.muted),
+                  borderRadius: '8px',
+                  padding: '10px 16px',
+                  cursor: 'pointer',
+                  color: focused ? '#fff' : COLORS.muted,
+                  fontSize: '13px'
+                }
+              },
+              ['Change Folder (' + config.folders[system.id] + ')']
+            )
+          )
+          return
+        }
+        var game = row.game
         list.appendChild(
           h(
             'div',
@@ -365,6 +430,9 @@
           )
         )
       })
+      if (games.length === 0) {
+        list.appendChild(h('p', { style: { color: COLORS.muted, fontSize: '13px' } }, ['No matching ROM files in that folder.']))
+      }
       wrap.appendChild(list)
       return wrap
     }
@@ -372,27 +440,41 @@
     // ---- nav ----
     api.onNav(function (action) {
       if (zone === 'systems') {
-        if (action === 'up') systemIndex = Math.max(0, systemIndex - 1)
-        else if (action === 'down') systemIndex = Math.min(SYSTEMS.length - 1, systemIndex + 1)
-        else if (action === 'confirm') openSystem(SYSTEMS[systemIndex])
-        else if (action === 'back' || action === 'menu') api.exit()
-        else return
+        var topRows = getTopRows()
+        if (action === 'up') topIndex = Math.max(0, topIndex - 1)
+        else if (action === 'down') topIndex = Math.min(topRows.length - 1, topIndex + 1)
+        else if (action === 'confirm') {
+          var row = topRows[topIndex]
+          if (row.kind === 'retroarch') changeRetroArchFolder()
+          else {
+            currentSystemTopIndex = topIndex
+            openSystem(row.system)
+          }
+        } else if (action === 'back' || action === 'menu') {
+          api.exit()
+          return
+        } else return
         render()
         return
       }
       // zone === 'games'
+      var gameRows = getGameRows()
       if (action === 'up') gameIndex = Math.max(0, gameIndex - 1)
-      else if (action === 'down') gameIndex = Math.min(Math.max(0, games.length - 1), gameIndex + 1)
-      else if (action === 'confirm' && games[gameIndex]) launchGame(SYSTEMS[systemIndex], games[gameIndex])
-      else if (action === 'back' || action === 'menu') {
+      else if (action === 'down') gameIndex = Math.min(gameRows.length - 1, gameIndex + 1)
+      else if (action === 'confirm') {
+        var gRow = gameRows[gameIndex]
+        if (gRow.kind === 'changeFolder') assignFolder(currentSystem())
+        else launchGame(currentSystem(), gRow.game)
+      } else if (action === 'back' || action === 'menu') {
         zone = 'systems'
+        topIndex = currentSystemTopIndex
         statusMessage = ''
       } else return
       render()
     })
 
     render()
-    ensureRetroArch()
+    detectRetroArch()
   }
 
   window.ClashPointPlugin = { mount: mount }
