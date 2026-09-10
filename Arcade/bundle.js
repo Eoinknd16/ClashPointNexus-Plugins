@@ -16,11 +16,23 @@
   // is already sitting where RetroArch expects it.
   // ---------------------------------------------------------------------
   var SYSTEMS = [
-    { id: 'nes', name: 'NES', extensions: ['.nes'], core: 'nestopia_libretro.dll' },
-    { id: 'snes', name: 'SNES', extensions: ['.sfc', '.smc'], core: 'snes9x_libretro.dll' },
-    { id: 'genesis', name: 'Genesis', extensions: ['.md', '.gen', '.bin'], core: 'genesis_plus_gx_libretro.dll' },
-    { id: 'n64', name: 'N64', extensions: ['.n64', '.z64'], core: 'mupen64plus_libretro.dll' },
-    { id: 'gba', name: 'GBA', extensions: ['.gba'], core: 'mgba_libretro.dll' }
+    // cores is a list, checked in order, first match wins -- not just one
+    // guessed filename. N64 shipped wrong for exactly this reason:
+    // RetroArch's Core Downloader moved from the original Mupen64Plus
+    // core to "Mupen64Plus-Next" a while back (mupen64plus_next_libretro,
+    // not mupen64plus_libretro), and a single hardcoded name has no way
+    // to survive that kind of rename. Keeping the old name as a fallback
+    // too, for anyone still on an older core.
+    { id: 'nes', name: 'NES', extensions: ['.nes'], cores: ['nestopia_libretro.dll'] },
+    { id: 'snes', name: 'SNES', extensions: ['.sfc', '.smc'], cores: ['snes9x_libretro.dll'] },
+    { id: 'genesis', name: 'Genesis', extensions: ['.md', '.gen', '.bin'], cores: ['genesis_plus_gx_libretro.dll'] },
+    {
+      id: 'n64',
+      name: 'N64',
+      extensions: ['.n64', '.z64'],
+      cores: ['mupen64plus_next_libretro.dll', 'mupen64plus_libretro.dll']
+    },
+    { id: 'gba', name: 'GBA', extensions: ['.gba'], cores: ['mgba_libretro.dll'] }
   ]
 
   // Fixed candidates: the canonical extraction path RetroArch's own
@@ -137,12 +149,18 @@
     },
 
     // -> { path, error }. Standard portable-layout convention: cores live
-    // in a `cores` folder alongside retroarch.exe itself.
-    findCore: async function (retroArchDir, coreFilename) {
+    // in a `cores` folder alongside retroarch.exe itself. coreFilenames is
+    // a list, checked in order — a system can name more than one
+    // acceptable core (see the SYSTEMS table's own note on why).
+    findCore: async function (retroArchDir, coreFilenames) {
       var result = await safeListDir(retroArchDir + '\\cores')
       if (result.entries === null) return { path: null, error: result.error }
-      var found = findCaseInsensitive(result.entries, coreFilename)
-      return { path: found ? retroArchDir + '\\cores\\' + coreFilename : null, error: null }
+      for (var i = 0; i < coreFilenames.length; i++) {
+        if (findCaseInsensitive(result.entries, coreFilenames[i])) {
+          return { path: retroArchDir + '\\cores\\' + coreFilenames[i], error: null }
+        }
+      }
+      return { path: null, error: null }
     },
 
     // -> { roms, error }. roms is an array of { name, path }, filtered by
@@ -314,11 +332,14 @@
         render()
         return
       }
-      var core = await RetroArchAdapter.findCore(retroArchDir, system.core)
+      var core = await RetroArchAdapter.findCore(retroArchDir, system.cores)
       if (!core.path) {
         statusMessage = core.error
-          ? "Couldn't check for the " + system.core + ' core (' + core.error + ')'
-          : system.name + " needs the " + system.core + " core, not installed. Get it from RetroArch's own Core Downloader."
+          ? "Couldn't check for a " + system.name + ' core (' + core.error + ')'
+          : system.name +
+            ' needs one of these cores: ' +
+            system.cores.join(', ') +
+            ". Not installed. Get it from RetroArch's own Core Downloader."
         render()
         return
       }
