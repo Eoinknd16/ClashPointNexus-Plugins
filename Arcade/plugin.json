@@ -1,9 +1,9 @@
 {
   "id": "arcade",
   "name": "Arcade",
-  "description": "Emulator frontend for ClashPoint Nexus. Point it at your ROM folders and launch through RetroArch, all from the couch. NES, SNES, Genesis, N64 and GBA to start, more systems coming. Requires RetroArch to already be installed.",
+  "description": "Emulator frontend for ClashPoint Nexus. Point it at your ROM folders and launch through RetroArch, all from the couch. NES, SNES, Genesis, N64, GBA, Game Boy/Color and Master System/Game Gear to start, more systems coming. Requires RetroArch to already be installed.",
   "author": "Eoinknd16",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "category": "game",
   "entry": "bundle.js",
   "icon": "icon.svg",

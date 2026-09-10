@@ -27,7 +27,7 @@
     // Downloader moved from the original Mupen64Plus core to
     // "Mupen64Plus-Next" a while back, and a single hardcoded name has no
     // way to survive that kind of rename on its own.
-    { id: 'nes', name: 'NES', extensions: ['.nes'], cores: ['nestopia_libretro.dll'] },
+    { id: 'nes', name: 'NES', extensions: ['.nes'], cores: ['nestopia_libretro.dll', 'fceumm_libretro.dll'] },
     { id: 'snes', name: 'SNES', extensions: ['.sfc', '.smc'], cores: ['snes9x_libretro.dll'] },
     { id: 'genesis', name: 'Genesis', extensions: ['.md', '.gen', '.bin'], cores: ['genesis_plus_gx_libretro.dll'] },
     {
@@ -36,7 +36,17 @@
       extensions: ['.n64', '.z64'],
       cores: ['mupen64plus_next_libretro.dll', 'mupen64plus_libretro.dll']
     },
-    { id: 'gba', name: 'GBA', extensions: ['.gba'], cores: ['mgba_libretro.dll'] }
+    { id: 'gba', name: 'GBA', extensions: ['.gba'], cores: ['mgba_libretro.dll'] },
+    // mGBA is a genuine multi-system core, not GBA-only -- it has its own
+    // "Game Boy model" autodetect covering GB/GBC/GBA from the same core,
+    // so this reuses the exact same, already-verified core file as GBA
+    // above rather than introducing a new one to get wrong.
+    { id: 'gb', name: 'Game Boy / Color', extensions: ['.gb', '.gbc'], cores: ['mgba_libretro.dll', 'gambatte_libretro.dll'] },
+    // Genesis Plus GX is also a real multi-system core (SG-1000/Master
+    // System/Game Gear/Genesis/Mega CD, not just Genesis) -- same
+    // already-verified core file as Genesis above, zero new core to
+    // introduce or get wrong.
+    { id: 'sms', name: 'Master System / Game Gear', extensions: ['.sms', '.gg'], cores: ['genesis_plus_gx_libretro.dll'] }
   ]
 
   // Fixed candidates: the canonical extraction path RetroArch's own
@@ -256,7 +266,7 @@
     // ---- state ----
     var config = loadConfig()
     var zone = 'systems' // 'systems' | 'games' | 'selectCore'
-    var topIndex = 0 // index into getTopRows() — the 5 systems + the RetroArch row
+    var topIndex = 0 // index into getTopRows() — SYSTEMS.length systems + the RetroArch row
     var gameIndex = 0 // index into getGameRows() — the "Change Folder"/"Change Core" rows + games
     var games = [] // currently-shown ROM list for the selected system
     var statusMessage = ''
