@@ -1,4 +1,12 @@
 (function () {
+  // Set once mount() actually runs (see the bottom of this file). Declared
+  // up here, not just as mount's own parameter, because RetroArchAdapter/
+  // safeListDir/candidateRetroArchDirs below all need it too and are
+  // deliberately defined outside mount() itself (a real reusable object,
+  // not a closure) — every call to api.* anywhere in this file resolves
+  // to this one shared reference.
+  var api
+
   // ---------------------------------------------------------------------
   // System table — the one piece of data a later system just extends.
   // Core filenames are libretro's own documented naming convention
@@ -191,7 +199,8 @@
     muted: '#8f8fa3'
   }
 
-  function mount(root, api) {
+  function mount(root, hostApi) {
+    api = hostApi
     // ---- state ----
     var config = loadConfig()
     var zone = 'systems' // 'systems' | 'games'
