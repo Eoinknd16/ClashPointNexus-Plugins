@@ -16,13 +16,17 @@
   // is already sitting where RetroArch expects it.
   // ---------------------------------------------------------------------
   var SYSTEMS = [
-    // cores is a list, checked in order, first match wins -- not just one
-    // guessed filename. N64 shipped wrong for exactly this reason:
-    // RetroArch's Core Downloader moved from the original Mupen64Plus
-    // core to "Mupen64Plus-Next" a while back (mupen64plus_next_libretro,
-    // not mupen64plus_libretro), and a single hardcoded name has no way
-    // to survive that kind of rename. Keeping the old name as a fallback
-    // too, for anyone still on an older core.
+    // cores is only ever a *suggested default* — the first one found gets
+    // auto-picked so most people never have to think about it, but it's
+    // never the only option: RetroArch has multiple real cores per system
+    // (accuracy vs. performance tradeoffs, different compatibility), and
+    // the user can always override this from the games list's own
+    // "Change Core" row, which lists every .dll actually in their cores
+    // folder, not just these guesses. N64 shipped wrong here once already
+    // for exactly the reason this list exists at all: RetroArch's Core
+    // Downloader moved from the original Mupen64Plus core to
+    // "Mupen64Plus-Next" a while back, and a single hardcoded name has no
+    // way to survive that kind of rename on its own.
     { id: 'nes', name: 'NES', extensions: ['.nes'], cores: ['nestopia_libretro.dll'] },
     { id: 'snes', name: 'SNES', extensions: ['.sfc', '.smc'], cores: ['snes9x_libretro.dll'] },
     { id: 'genesis', name: 'Genesis', extensions: ['.md', '.gen', '.bin'], cores: ['genesis_plus_gx_libretro.dll'] },
@@ -84,12 +88,17 @@
   var STORAGE_KEY = 'arcade.config.v1'
 
   function loadConfig() {
+    var config
     try {
       var raw = localStorage.getItem(STORAGE_KEY)
-      return raw ? JSON.parse(raw) : { folders: {}, retroArchDir: null }
+      config = raw ? JSON.parse(raw) : { folders: {}, retroArchDir: null }
     } catch (e) {
-      return { folders: {}, retroArchDir: null }
+      config = { folders: {}, retroArchDir: null }
     }
+    // cores: {} is new — an already-installed config from before this
+    // existed won't have it, so this fills it in rather than assuming.
+    if (!config.cores) config.cores = {}
+    return config
   }
 
   function saveConfig(config) {
@@ -148,19 +157,44 @@
       return { found: findCaseInsensitive(result.entries, 'retroarch.exe'), error: null }
     },
 
-    // -> { path, error }. Standard portable-layout convention: cores live
-    // in a `cores` folder alongside retroarch.exe itself. coreFilenames is
-    // a list, checked in order — a system can name more than one
-    // acceptable core (see the SYSTEMS table's own note on why).
-    findCore: async function (retroArchDir, coreFilenames) {
+    // -> { path, filename, error }. Standard portable-layout convention:
+    // cores live in a `cores` folder alongside retroarch.exe itself.
+    // chosenFilename is the user's own explicit pick (config.cores[id]),
+    // checked first and on its own — if they picked one and it's since
+    // vanished, that's worth its own clear message, not a silent fallback
+    // to something they didn't choose. Only when nothing's been chosen
+    // yet does this fall back to fallbackCandidates (the SYSTEMS table's
+    // suggested defaults), auto-picking the first one actually present.
+    findCore: async function (retroArchDir, chosenFilename, fallbackCandidates) {
       var result = await safeListDir(retroArchDir + '\\cores')
-      if (result.entries === null) return { path: null, error: result.error }
-      for (var i = 0; i < coreFilenames.length; i++) {
-        if (findCaseInsensitive(result.entries, coreFilenames[i])) {
-          return { path: retroArchDir + '\\cores\\' + coreFilenames[i], error: null }
+      if (result.entries === null) return { path: null, filename: null, error: result.error }
+      if (chosenFilename) {
+        var stillThere = findCaseInsensitive(result.entries, chosenFilename)
+        return stillThere
+          ? { path: retroArchDir + '\\cores\\' + chosenFilename, filename: chosenFilename, error: null }
+          : { path: null, filename: null, error: null }
+      }
+      for (var i = 0; i < fallbackCandidates.length; i++) {
+        if (findCaseInsensitive(result.entries, fallbackCandidates[i])) {
+          return { path: retroArchDir + '\\cores\\' + fallbackCandidates[i], filename: fallbackCandidates[i], error: null }
         }
       }
-      return { path: null, error: null }
+      return { path: null, filename: null, error: null }
+    },
+
+    // -> { cores, error }. Every .dll in the cores folder, not just the
+    // ones this system happens to suggest — the whole point is letting
+    // the user pick literally any core they have installed.
+    listCores: async function (retroArchDir) {
+      var result = await safeListDir(retroArchDir + '\\cores')
+      if (result.entries === null) return { cores: null, error: result.error }
+      var cores = result.entries.filter(function (name) {
+        return name.slice(-4).toLowerCase() === '.dll'
+      })
+      cores.sort(function (a, b) {
+        return a.localeCompare(b)
+      })
+      return { cores: cores, error: null }
     },
 
     // -> { roms, error }. roms is an array of { name, path }, filtered by
@@ -221,9 +255,9 @@
     api = hostApi
     // ---- state ----
     var config = loadConfig()
-    var zone = 'systems' // 'systems' | 'games'
+    var zone = 'systems' // 'systems' | 'games' | 'selectCore'
     var topIndex = 0 // index into getTopRows() — the 5 systems + the RetroArch row
-    var gameIndex = 0 // index into getGameRows() — the "Change Folder" row + games
+    var gameIndex = 0 // index into getGameRows() — the "Change Folder"/"Change Core" rows + games
     var games = [] // currently-shown ROM list for the selected system
     var statusMessage = ''
     var retroArchDir = null
@@ -232,6 +266,15 @@
     // from topIndex so leaving/re-entering the systems list doesn't lose
     // which system's games are on screen.
     var currentSystemTopIndex = 0
+    // The current system's resolved core (auto-detected or explicitly
+    // chosen) — refreshed whenever its game list opens or its core
+    // selection changes, not just at launch time, so "Change Core" and
+    // the games list can both show what's actually active right now.
+    var currentCoreFilename = null
+    var coreStatusMessage = ''
+    // 'selectCore' zone state
+    var availableCores = []
+    var coreIndex = 0
 
     root.style.cssText =
       'background:' +
@@ -248,7 +291,7 @@
     }
 
     function getGameRows() {
-      var rows = [{ kind: 'changeFolder' }]
+      var rows = [{ kind: 'changeFolder' }, { kind: 'changeCore' }]
       games.forEach(function (g) {
         rows.push({ kind: 'game', game: g })
       })
@@ -305,6 +348,39 @@
       render()
     }
 
+    // Re-resolves what core a system would actually launch with right
+    // now — the explicit pick in config.cores[id] if there is one, else
+    // the first suggested default that's actually present. Called
+    // whenever a system's game list opens or its core selection changes,
+    // not just at launch time, so the games screen can show what's
+    // active instead of only finding out when a launch fails.
+    async function refreshCurrentCore(system) {
+      if (!retroArchDir) {
+        currentCoreFilename = null
+        coreStatusMessage = ''
+        return
+      }
+      var core = await RetroArchAdapter.findCore(retroArchDir, config.cores[system.id], system.cores)
+      if (core.path) {
+        currentCoreFilename = core.filename
+        coreStatusMessage = ''
+        // Remember whatever actually resolved, auto-detected or chosen,
+        // so next time is instant and "Change Core" shows the real
+        // current pick, not just a re-guess.
+        if (config.cores[system.id] !== core.filename) {
+          config.cores[system.id] = core.filename
+          saveConfig(config)
+        }
+      } else {
+        currentCoreFilename = null
+        coreStatusMessage = core.error
+          ? "Couldn't check for a core (" + core.error + ')'
+          : config.cores[system.id]
+            ? 'Your chosen core (' + config.cores[system.id] + ") isn't there anymore, pick another with Change Core"
+            : system.name + ' needs one of: ' + system.cores.join(', ') + ", or pick your own with Change Core"
+      }
+    }
+
     async function openSystem(system) {
       var folder = config.folders[system.id]
       if (!folder) {
@@ -324,6 +400,47 @@
       zone = 'games'
       statusMessage = ''
       render()
+      await refreshCurrentCore(system)
+      render()
+    }
+
+    // Always reachable from the games list, not just when a core is
+    // missing — real choice means picking a different core even when the
+    // auto-detected one works fine, e.g. swapping accuracy for speed.
+    async function changeCoreForSystem(system) {
+      if (!retroArchDir) {
+        statusMessage = 'RetroArch not found, see above'
+        render()
+        return
+      }
+      statusMessage = 'Looking for installed cores...'
+      render()
+      var result = await RetroArchAdapter.listCores(retroArchDir)
+      if (result.cores === null) {
+        statusMessage = "Couldn't read the cores folder" + (result.error ? ' (' + result.error + ')' : '')
+        render()
+        return
+      }
+      if (result.cores.length === 0) {
+        statusMessage = "No cores installed at all yet, get one from RetroArch's own Core Downloader"
+        render()
+        return
+      }
+      availableCores = result.cores
+      coreIndex = Math.max(0, availableCores.indexOf(currentCoreFilename))
+      zone = 'selectCore'
+      statusMessage = ''
+      render()
+    }
+
+    async function selectCore(system, filename) {
+      config.cores[system.id] = filename
+      saveConfig(config)
+      zone = 'games'
+      statusMessage = 'Core set to ' + filename
+      render()
+      await refreshCurrentCore(system)
+      render()
     }
 
     async function launchGame(system, game) {
@@ -332,14 +449,9 @@
         render()
         return
       }
-      var core = await RetroArchAdapter.findCore(retroArchDir, system.cores)
+      var core = await RetroArchAdapter.findCore(retroArchDir, config.cores[system.id], system.cores)
       if (!core.path) {
-        statusMessage = core.error
-          ? "Couldn't check for a " + system.name + ' core (' + core.error + ')'
-          : system.name +
-            ' needs one of these cores: ' +
-            system.cores.join(', ') +
-            ". Not installed. Get it from RetroArch's own Core Downloader."
+        statusMessage = coreStatusMessage || system.name + ' has no usable core, see Change Core'
         render()
         return
       }
@@ -364,6 +476,7 @@
       root.appendChild(header)
 
       if (zone === 'systems') root.appendChild(renderSystems())
+      else if (zone === 'selectCore') root.appendChild(renderSelectCore())
       else root.appendChild(renderGamesForCurrentSystem())
 
       if (statusMessage) {
@@ -449,7 +562,7 @@
       var wrap = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px', overflow: 'hidden', flex: '1' } })
       wrap.appendChild(
         h('h2', { style: { fontSize: '16px', margin: '0 0 4px 0', color: COLORS.muted } }, [
-          system.name + ' (' + games.length + ' found)'
+          system.name + ' (' + games.length + ' found, core: ' + (currentCoreFilename || 'none') + ')'
         ])
       )
       var list = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', overflowY: 'auto' } })
@@ -475,6 +588,30 @@
                 }
               },
               ['Change Folder (' + config.folders[system.id] + ')']
+            )
+          )
+          return
+        }
+        if (row.kind === 'changeCore') {
+          list.appendChild(
+            h(
+              'div',
+              {
+                onclick: function () {
+                  gameIndex = i
+                  changeCoreForSystem(system)
+                },
+                style: {
+                  background: focused ? COLORS.accent : 'transparent',
+                  border: '1px dashed ' + (focused ? COLORS.accent : COLORS.muted),
+                  borderRadius: '8px',
+                  padding: '10px 16px',
+                  cursor: 'pointer',
+                  color: focused ? '#fff' : COLORS.muted,
+                  fontSize: '13px'
+                }
+              },
+              ['Change Core' + (currentCoreFilename ? ' (' + currentCoreFilename + ')' : ' (none selected)')]
             )
           )
           return
@@ -506,6 +643,46 @@
       return wrap
     }
 
+    // Every .dll actually present in RetroArch's cores folder, not just
+    // this system's suggested defaults — real free choice, not a
+    // restricted list.
+    function renderSelectCore() {
+      var system = currentSystem()
+      var wrap = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px', overflow: 'hidden', flex: '1' } })
+      wrap.appendChild(
+        h('h2', { style: { fontSize: '16px', margin: '0 0 4px 0', color: COLORS.muted } }, [
+          'Pick a core for ' + system.name
+        ])
+      )
+      var list = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', overflowY: 'auto' } })
+      availableCores.forEach(function (filename, i) {
+        var focused = i === coreIndex
+        var isCurrent = filename === currentCoreFilename
+        list.appendChild(
+          h(
+            'div',
+            {
+              onclick: function () {
+                coreIndex = i
+                selectCore(system, filename)
+              },
+              style: {
+                background: focused ? COLORS.accent : COLORS.panel,
+                borderRadius: '8px',
+                padding: '10px 16px',
+                cursor: 'pointer',
+                display: 'flex',
+                justifyContent: 'space-between'
+              }
+            },
+            [filename, isCurrent ? h('span', { style: { fontSize: '12px' } }, ['current']) : null]
+          )
+        )
+      })
+      wrap.appendChild(list)
+      return wrap
+    }
+
     // ---- nav ----
     api.onNav(function (action) {
       if (zone === 'systems') {
@@ -526,6 +703,18 @@
         render()
         return
       }
+      if (zone === 'selectCore') {
+        if (action === 'up') coreIndex = Math.max(0, coreIndex - 1)
+        else if (action === 'down') coreIndex = Math.min(availableCores.length - 1, coreIndex + 1)
+        else if (action === 'confirm' && availableCores[coreIndex]) {
+          selectCore(currentSystem(), availableCores[coreIndex])
+        } else if (action === 'back' || action === 'menu') {
+          zone = 'games'
+          statusMessage = ''
+        } else return
+        render()
+        return
+      }
       // zone === 'games'
       var gameRows = getGameRows()
       if (action === 'up') gameIndex = Math.max(0, gameIndex - 1)
@@ -533,6 +722,7 @@
       else if (action === 'confirm') {
         var gRow = gameRows[gameIndex]
         if (gRow.kind === 'changeFolder') assignFolder(currentSystem())
+        else if (gRow.kind === 'changeCore') changeCoreForSystem(currentSystem())
         else launchGame(currentSystem(), gRow.game)
       } else if (action === 'back' || action === 'menu') {
         zone = 'systems'
