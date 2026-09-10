@@ -15,13 +15,51 @@
     { id: 'gba', name: 'GBA', extensions: ['.gba'], core: 'mgba_libretro.dll' }
   ]
 
-  // Canonical extraction path RetroArch's own Windows download instructions
-  // recommend for the portable build, plus the default Steam library
-  // location for the Steam release (App ID 1118310) — checked directly
-  // rather than guessed from an env var this sandbox has no primitive to
-  // read. If neither is right, the RetroArch row's own "change" action
-  // covers it.
-  var RETROARCH_CANDIDATE_DIRS = ['C:\\RetroArch-Win64', 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\RetroArch']
+  // Fixed candidates: the canonical extraction path RetroArch's own
+  // Windows download instructions recommend for the portable build, a
+  // couple of common simplifications of it, and the default Steam library
+  // location for the Steam release (App ID 1118310). Widened with
+  // env-var-based guesses at detect time (see candidateRetroArchDirs) —
+  // an installer's actual default varies by version/install method, and
+  // no fixed list covers every one of them. If nothing here is right
+  // either, the RetroArch row's own "change" action always works
+  // regardless, since it just checks whatever folder you point it at.
+  var RETROARCH_FIXED_CANDIDATE_DIRS = [
+    'C:\\RetroArch-Win64',
+    'C:\\RetroArch',
+    'C:\\Program Files (x86)\\Steam\\steamapps\\common\\RetroArch'
+  ]
+
+  // getEnvVar only exists on Nexus v0.2.91+ (see main/plugins/pluginShell.ts)
+  // — if this plugin ever gets reinstalled ahead of a core update, api
+  // simply won't have it yet. Guarded rather than assumed, so this
+  // degrades to the fixed candidate list instead of throwing.
+  async function candidateRetroArchDirs() {
+    var dirs = RETROARCH_FIXED_CANDIDATE_DIRS.slice()
+    if (typeof api.getEnvVar !== 'function') return dirs
+    var localAppData = await api.getEnvVar('LOCALAPPDATA')
+    if (localAppData) {
+      dirs.push(localAppData + '\\RetroArch-Win64')
+      dirs.push(localAppData + '\\Programs\\RetroArch')
+    }
+    var programFiles = await api.getEnvVar('ProgramFiles')
+    if (programFiles) dirs.push(programFiles + '\\RetroArch-Win64')
+    return dirs
+  }
+
+  // Windows filesystems are case-insensitive but case-preserving —
+  // readdir returns whatever casing is actually on disk, which won't
+  // always match a lowercase guess like 'retroarch.exe' exactly (a
+  // source-built RetroArch.exe, for instance). Matching case-insensitively
+  // here is the safe default; actually launching the exe works either way
+  // since Windows itself resolves paths case-insensitively.
+  function findCaseInsensitive(entries, name) {
+    var lower = name.toLowerCase()
+    for (var i = 0; i < entries.length; i++) {
+      if (entries[i].toLowerCase() === lower) return true
+    }
+    return false
+  }
 
   var STORAGE_KEY = 'arcade.config.v1'
 
@@ -72,9 +110,10 @@
         var cached = await this._hasExe(config.retroArchDir)
         if (cached.found) return { dir: config.retroArchDir, error: null }
       }
+      var candidates = await candidateRetroArchDirs()
       var lastError = null
-      for (var i = 0; i < RETROARCH_CANDIDATE_DIRS.length; i++) {
-        var dir = RETROARCH_CANDIDATE_DIRS[i]
+      for (var i = 0; i < candidates.length; i++) {
+        var dir = candidates[i]
         var result = await this._hasExe(dir)
         if (result.found) return { dir: dir, error: null }
         if (result.error) lastError = result.error
@@ -86,7 +125,7 @@
     _hasExe: async function (dir) {
       var result = await safeListDir(dir)
       if (result.entries === null) return { found: false, error: result.error }
-      return { found: result.entries.indexOf('retroarch.exe') !== -1, error: null }
+      return { found: findCaseInsensitive(result.entries, 'retroarch.exe'), error: null }
     },
 
     // -> { path, error }. Standard portable-layout convention: cores live
@@ -94,7 +133,7 @@
     findCore: async function (retroArchDir, coreFilename) {
       var result = await safeListDir(retroArchDir + '\\cores')
       if (result.entries === null) return { path: null, error: result.error }
-      var found = result.entries.indexOf(coreFilename) !== -1
+      var found = findCaseInsensitive(result.entries, coreFilename)
       return { path: found ? retroArchDir + '\\cores\\' + coreFilename : null, error: null }
     },
 
@@ -262,7 +301,7 @@
 
     async function launchGame(system, game) {
       if (!retroArchDir) {
-        statusMessage = 'RetroArch not found — see above'
+        statusMessage = 'RetroArch not found, see above'
         render()
         return
       }
@@ -330,7 +369,7 @@
               [
                 h('span', { style: { fontWeight: '600' } }, ['RetroArch']),
                 h('span', { style: { fontSize: '12px', color: focused ? '#e0e0ff' : COLORS.muted } }, [
-                  retroArchDir ? retroArchDir + ' — press Confirm to change' : 'Not found — press Confirm to locate it'
+                  retroArchDir ? retroArchDir + ' (press Confirm to change)' : 'Not found (press Confirm to locate it)'
                 ])
               ]
             )
@@ -361,7 +400,7 @@
             [
               h('span', { style: { fontWeight: '600' } }, [system.name]),
               h('span', { style: { fontSize: '12px', color: focused ? '#e0e0ff' : COLORS.muted } }, [
-                folder ? folder : 'Not set up — press Confirm to pick a folder'
+                folder ? folder : 'Not set up (press Confirm to pick a folder)'
               ])
             ]
           )
@@ -380,7 +419,7 @@
       var wrap = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px', overflow: 'hidden', flex: '1' } })
       wrap.appendChild(
         h('h2', { style: { fontSize: '16px', margin: '0 0 4px 0', color: COLORS.muted } }, [
-          system.name + ' — ' + games.length + ' found'
+          system.name + ' (' + games.length + ' found)'
         ])
       )
       var list = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', overflowY: 'auto' } })
